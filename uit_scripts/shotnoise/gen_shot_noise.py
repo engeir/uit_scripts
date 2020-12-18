@@ -234,7 +234,7 @@ def create_ta(rate, gamma, K):
 def amp_ta(
         gamma, K, Kdist=False, mA=1., kappa=0.5, TWkappa = 0.,
         TWdist='exp', Adist='exp', seedTW=None, seedA=None,
-        TWparW=10, AparW =10):
+        TWparW=10, AparW=10, rate=('n-random', 'const')):
     """
     Use:
         amp_ta(
@@ -256,6 +256,12 @@ def amp_ta(
         Adist: Amplitude distribution (see below) .......... int in range(8)
         seedTW/A: Specify a random seed for TWdist/Adist ... int
         TWparW/AparW: Width for pareto distribution ........ float
+        rate: The first position give which method to use
+              when generating the variable rate process
+              ('n-random' or 'ou'), and the second position
+              give the method to use to generate the
+              waiting times based on the given variable
+              rate ('int', '2-rd-tw', 'tick'). ............. tuple of str
     Options for distributions are (where m denotes either mA or tw=1/gamma):
         Note: Using a distribution which gives negative values for the
         waiting times gives an error.
@@ -305,6 +311,7 @@ def amp_ta(
     distlist_TW = ['exp','deg','ray','unif','gam','pareto','bpareto']
     assert(TWdist in distlist_TW), 'Invalid TWdist'
     assert(Adist in distlist_A), 'Invalid Adist'
+    assert rate[0] in ['n-random', 'ou'] and rate[1] in ('const', 'int', '2-rd-tw', 'tick'), 'Invalid rate tuple'
 
     prngTW = np.random.RandomState(seed=seedTW)
     prngA = np.random.RandomState(seed=seedA)
@@ -313,66 +320,74 @@ def amp_ta(
         K = np.random.poisson(lam=K)
 
     # Geneate ta, Tend
-    tw = 1./gamma
-    if TWdist == 'exp':
-        TW = prngTW.exponential(scale=tw, size=K)
-    elif TWdist == 'deg':
-        TW = tw*np.ones(K)
-    elif TWdist == 'ray':
-        TW = prngTW.rayleigh(scale=np.sqrt(2./np.pi)*tw, size=K)
-    elif TWdist == 'unif':
-        assert(TWkappa>=0.), 'TWkappa>=0 for TWdist uniform'
-        #TW = prngTW.uniform(low=TWkappa, high=TWkappa+2*tw, size=K) @Audun I don't understand your previous implementation
-        TW = prngTW.uniform(low=(1-TWkappa)*tw, high=(1+TWkappa)*tw, size=K)
-    elif TWdist == 'gam':
-        TW = prngTW.gamma(TWkappa, scale=tw/TWkappa, size=K)
-    elif TWdist == 'pareto':
-        assert(TWkappa > 2), 'Invalid shape parameter for pareto'
-        import warnings
-        if TWkappa < 2.3:
-            warnings.warn(
-                    'For TWkappa close to 2 many events needed for <TD> = 1.')
-        from scipy.stats import rv_continuous
+    if rate[1] in ['const', '2-rd-tw']:
+        # Normal, constant waiting time (float)
+        if rate[1] == 'const':
+            tw = 1./gamma
+        # K random waiting times (np.ndarray)
+        elif rate[1] == '2-rd-tw':
+            tw, _, _ = create_ta(rate, gamma, K)
+        # Generate based on either constant float or array with dim. (K,)
+        if TWdist == 'exp':
+            TW = prngTW.exponential(scale=tw, size=K)
+        elif TWdist == 'deg':
+            TW = tw*np.ones(K)
+        elif TWdist == 'ray':
+            TW = prngTW.rayleigh(scale=np.sqrt(2./np.pi)*tw, size=K)
+        elif TWdist == 'unif':
+            assert(TWkappa>=0.), 'TWkappa>=0 for TWdist uniform'
+            #TW = prngTW.uniform(low=TWkappa, high=TWkappa+2*tw, size=K) @Audun I don't understand your previous implementation
+            TW = prngTW.uniform(low=(1-TWkappa)*tw, high=(1+TWkappa)*tw, size=K)
+        elif TWdist == 'gam':
+            TW = prngTW.gamma(TWkappa, scale=tw/TWkappa, size=K)
+        elif TWdist == 'pareto':
+            assert(TWkappa > 2), 'Invalid shape parameter for pareto'
+            import warnings
+            if TWkappa < 2.3:
+                warnings.warn(
+                        'For TWkappa close to 2 many events needed for <TD> = 1.')
+            from scipy.stats import rv_continuous
 
-        class pareto_gen(rv_continuous):
-            def _pdf(self,t, alpha):
-                return (alpha-2)**(alpha-1)/(alpha-1)**(alpha-2)*t**(-alpha)
+            class pareto_gen(rv_continuous):
+                def _pdf(self,t, alpha):
+                    return (alpha-2)**(alpha-1)/(alpha-1)**(alpha-2)*t**(-alpha)
 
-        pareto = pareto_gen(a=((TWkappa-2)/(TWkappa-1)), name='pareto')
-        TW = pareto.rvs(alpha=TWkappa, size=K)
+            pareto = pareto_gen(a=((TWkappa-2)/(TWkappa-1)), name='pareto')
+            TW = pareto.rvs(alpha=TWkappa, size=K)
 
-    elif TWdist == 'bpareto':
-        assert(TWkappa >= 1), 'Invalid shape parameter for pareto'
-        assert(TWparW > 1.0), 'Invalid width parameter for pareto'
+        elif TWdist == 'bpareto':
+            assert(TWkappa >= 1), 'Invalid shape parameter for pareto'
+            assert(TWparW > 1.0), 'Invalid width parameter for pareto'
 
-        from scipy.stats import rv_continuous
+            from scipy.stats import rv_continuous
 
-        class bounded_pareto_gen(rv_continuous):
-            def _pdf(self,x, alpha, width):
-                if(alpha == 1):
-                    return (x*np.log(width))**(-1)
-                elif(alpha == 2):
-                    return (x**2*np.log(width))**(-1)
-                else:
-                    return (-1.0+alpha)*x**(-alpha)*  ((-1.0+alpha)*(-1.0+width**(2.0-alpha)) / ((-2.0+alpha)*(-1.0+width**(1.0-alpha))) )**(1.0-alpha) / (1.0-width**(1.0-alpha))
+            class bounded_pareto_gen(rv_continuous):
+                def _pdf(self,x, alpha, width):
+                    if(alpha == 1):
+                        return (x*np.log(width))**(-1)
+                    elif(alpha == 2):
+                        return (x**2*np.log(width))**(-1)
+                    else:
+                        return (-1.0+alpha)*x**(-alpha)*  ((-1.0+alpha)*(-1.0+width**(2.0-alpha)) / ((-2.0+alpha)*(-1.0+width**(1.0-alpha))) )**(1.0-alpha) / (1.0-width**(1.0-alpha))
 
-        if(TWkappa == 1):
-            tau_min = np.log(TWparW)/(-1+TWparW)
-            tau_max = TWparW*np.log(TWparW)/(-1+TWparW)
-        elif(TWkappa == 2):
-            tau_min = (TWparW-1)/(TWparW*np.log(TWparW))
-            tau_max = (TWparW-1)/(np.log(TWparW))
-        else:
-            tau_min = (TWkappa - 2.0) * (-1.0 + pow(TWparW, 1.0 - TWkappa)) / ((TWkappa - 1.0) * (-1.0 + pow(TWparW, 2.0 - TWkappa)))
-            tau_max = TWparW * (TWkappa - 2.0) * (-1.0 + pow(TWparW, 1.0 - TWkappa)) /( (TWkappa - 1.0) * (-1.0 + pow(TWparW, 2.0 - TWkappa)))
+            if(TWkappa == 1):
+                tau_min = np.log(TWparW)/(-1+TWparW)
+                tau_max = TWparW*np.log(TWparW)/(-1+TWparW)
+            elif(TWkappa == 2):
+                tau_min = (TWparW-1)/(TWparW*np.log(TWparW))
+                tau_max = (TWparW-1)/(np.log(TWparW))
+            else:
+                tau_min = (TWkappa - 2.0) * (-1.0 + pow(TWparW, 1.0 - TWkappa)) / ((TWkappa - 1.0) * (-1.0 + pow(TWparW, 2.0 - TWkappa)))
+                tau_max = TWparW * (TWkappa - 2.0) * (-1.0 + pow(TWparW, 1.0 - TWkappa)) /( (TWkappa - 1.0) * (-1.0 + pow(TWparW, 2.0 - TWkappa)))
 
-        bounded_pareto = bounded_pareto_gen(a=tau_min, b=tau_max, name='bpareto')
-        TW = bounded_pareto.rvs(alpha=TWkappa, width = TWparW,  size=K)
+            bounded_pareto = bounded_pareto_gen(a=tau_min, b=tau_max, name='bpareto')
+            TW = bounded_pareto.rvs(alpha=TWkappa, width = TWparW,  size=K)
 
-
-    TW = np.insert(TW, 0, 0.)
-    ta = np.cumsum(TW[:-1])
-    Tend = ta[-1] + TW[-1]
+        TW = np.insert(TW, 0, 0.)
+        ta = np.cumsum(TW[:-1])
+        Tend = ta[-1] + TW[-1]
+    elif rate[1] in ['int', 'tick']:
+        ta, K, Tend = create_ta(rate, gamma, K)
 
     # Generate amplitudes
     if Adist == 'exp':
@@ -771,7 +786,7 @@ def gen_noise(
 
 def make_signal(
         gamma, K, dt, Kdist=False, mA=1., kappa=0.5, TWkappa=0, ampta=False,
-        TWdist='exp', Adist='exp', seedTW=None, seedA=None, convolve=True,
+        TWdist='exp', Adist='exp', seedTW=None, seedA=None, convolve=True, rate=('n-random', 'const'),
         dynamic=False, additive=False, eps=0.1, noise_seed=None,
         kernsize=2**11, kerntype='1-exp', lam=0.5, dkern=False, tol=1e-5, kernshape=1,
         TDdist='deg', seedTD=None , TDkappa=0,skip_transient=True,round_ta=True,
@@ -799,7 +814,7 @@ def make_signal(
     import numpy as np
     A, ta, Tend = amp_ta(
             gamma, K, Kdist=Kdist, mA=mA, kappa=kappa, TWkappa = TWkappa,
-            TWdist=TWdist, Adist=Adist, seedTW=seedTW, seedA=seedA,
+            TWdist=TWdist, Adist=Adist, seedTW=seedTW, seedA=seedA, rate=rate,
             TWparW=TWparW, AparW =AparW)
 
     if convolve:
