@@ -114,8 +114,7 @@ def create_rate(version, gamma, K, k_length=True, tw=False):
         size = K if k_length else int(1e5)
         timeline = np.linspace(0., 1., size)
         t = np.linspace(0., T, size)
-        rate = rate_process(x0=1.)(
-            timeline)  # pylint: disable=E1102,E1123,E1120
+        rate = rate_process(x0=1.)(timeline)  # pylint: disable=E1102,E1123,E1120
         rate = rate.reshape((-1,))
         rate -= rate.min()
         rate = rate * gamma * .995 / rate.mean() + .005
